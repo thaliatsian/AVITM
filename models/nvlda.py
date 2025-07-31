@@ -93,19 +93,22 @@ class VAE(object):
                                            biases['b2']))
         layer_do = tf.nn.dropout(layer_2, self.keep_prob)
 
-        z_mean = tf.compat.v1.layers.batch_normalization(tf.add(tf.matmul(layer_do, weights['out_mean']),
-                        biases['out_mean']))
-        z_log_sigma_sq = \
-            tf.compat.v1.layers.batch_normalization(tf.add(tf.matmul(layer_do, weights['out_log_sigma']),
-                   biases['out_log_sigma']))
+        bn_mean = tf.keras.layers.BatchNormalization()
+        z_mean = bn_mean(tf.add(tf.matmul(layer_do, weights['out_mean']),
+                                biases['out_mean']))
+        bn_log_sigma = tf.keras.layers.BatchNormalization()
+        z_log_sigma_sq = bn_log_sigma(tf.add(tf.matmul(layer_do, weights['out_log_sigma']),
+                                             biases['out_log_sigma']))
 
         return (z_mean, z_log_sigma_sq)
 
-    def _generator_network(self,z, weights):
+    def _generator_network(self, z, weights):
         self.layer_do_0 = tf.nn.dropout(tf.nn.softmax(z), self.keep_prob)
-        x_reconstr_mean = tf.add(tf.matmul(self.layer_do_0, tf.nn.softmax(tf.compat.v1.layers.batch_normalization(weights['h2']))),0.0)
+        bn_gen = tf.keras.layers.BatchNormalization()
+        bn_out = bn_gen(weights['h2'])
+        x_reconstr_mean = tf.nn.softmax(tf.add(tf.matmul(self.layer_do_0, bn_out), 0.0))
         return x_reconstr_mean
-
+    
     def _create_loss_optimizer(self):
         self.x_reconstr_mean+=1e-10
         reconstr_loss = \

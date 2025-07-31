@@ -1,8 +1,6 @@
 #!/usr/bin/python
 
 import warnings
-
-warnings.filterwarnings("ignore", category=FutureWarning)
 import numpy as np
 import tensorflow as tf
 import itertools,time
@@ -14,6 +12,13 @@ import matplotlib.pyplot as plt
 import pickle
 import sys, getopt
 from models import prodlda, nvlda
+
+# Suppress warnings from TensorFlow
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# Disable eager execution for TF1-style code
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
 '''-----------Data--------------'''
 def onehot(data, min_length):
     return np.bincount(data, minlength=min_length)
@@ -103,7 +108,7 @@ def train(network_architecture, minibatches, type='prodlda',learning_rate=0.001,
             avg_cost += cost / n_samples_tr * batch_size
 
             if np.isnan(avg_cost):
-                print (epoch,i,np.sum(batch_xs,1).astype(np.int),batch_xs.shape)
+                print (epoch,i,np.sum(batch_xs,1).astype(int),batch_xs.shape)
                 print ('Encountered NaN, stopping training. Please check the learning_rate settings and the momentum.')
                 # return vae,emb
                 sys.exit()

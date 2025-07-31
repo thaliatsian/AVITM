@@ -75,18 +75,20 @@ class VAE(object):
                             n_input, n_z):
         all_weights = dict()
         all_weights['weights_recog'] = {
-            'h1': tf.compat.v1.get_variable('h1',[n_input, n_hidden_recog_1]),
-            'h2': tf.compat.v1.get_variable('h2',[n_hidden_recog_1, n_hidden_recog_2]),
-            'out_mean': tf.compat.v1.get_variable('out_mean',[n_hidden_recog_2, n_z]),
-            'out_log_sigma': tf.compat.v1.get_variable('out_log_sigma',[n_hidden_recog_2, n_z])}
+            'h1': tf.compat.v1.get_variable('h1', [n_input, n_hidden_recog_1]),
+            'h2': tf.compat.v1.get_variable('h2', [n_hidden_recog_1, n_hidden_recog_2]),
+            'out_mean': tf.compat.v1.get_variable('out_mean', [n_hidden_recog_2, n_z]),
+            'out_log_sigma': tf.compat.v1.get_variable('out_log_sigma', [n_hidden_recog_2, n_z])
+        }
         all_weights['biases_recog'] = {
             'b1': tf.Variable(tf.zeros([n_hidden_recog_1], dtype=tf.float32)),
             'b2': tf.Variable(tf.zeros([n_hidden_recog_2], dtype=tf.float32)),
             'out_mean': tf.Variable(tf.zeros([n_z], dtype=tf.float32)),
-            'out_log_sigma': tf.Variable(tf.zeros([n_z], dtype=tf.float32))}
+            'out_log_sigma': tf.Variable(tf.zeros([n_z], dtype=tf.float32))
+        }
         all_weights['weights_gener'] = {
-            'h2': tf.Variable(xavier_init(n_z, n_hidden_gener_1))}
-
+            'h2': tf.Variable(xavier_init(n_z, n_hidden_gener_1))
+        }
         return all_weights
 
     def _recognition_network(self, weights, biases):
@@ -97,22 +99,21 @@ class VAE(object):
                                            biases['b2']))
         layer_do = tf.nn.dropout(layer_2, self.keep_prob)
 
-        z_mean = tf.compat.v1.layers.batch_normalization(tf.add(tf.matmul(layer_do, weights['out_mean']),
-                        biases['out_mean']))
-        z_log_sigma_sq = \
-            tf.compat.v1.layers.batch_normalization(tf.add(tf.matmul(layer_do, weights['out_log_sigma']),
-                   biases['out_log_sigma']))
-
+        bn_mean = tf.keras.layers.BatchNormalization()
+        z_mean = bn_mean(tf.add(tf.matmul(layer_do, weights['out_mean']),
+                                biases['out_mean']))
+        bn_log_sigma = tf.keras.layers.BatchNormalization()
+        z_log_sigma_sq = bn_log_sigma(tf.add(tf.matmul(layer_do, weights['out_log_sigma']),
+                                             biases['out_log_sigma']))
 
         return (z_mean, z_log_sigma_sq)
 
-    def _generator_network(self,z, weights):
+    def _generator_network(self, z, weights):
         self.layer_do_0 = tf.nn.dropout(tf.nn.softmax(z), self.keep_prob)
-        x_reconstr_mean = tf.nn.softmax(tf.compat.v1.layers.batch_normalization(tf.add(
-                    tf.matmul(self.layer_do_0, weights['h2']),0.0)))
+        bn_gen = tf.keras.layers.BatchNormalization()
+        x_reconstr_mean = tf.nn.softmax(bn_gen(tf.add(tf.matmul(self.layer_do_0, weights['h2']), 0.0)))
         return x_reconstr_mean
-
-
+    
     def _create_loss_optimizer(self):
 
         self.x_reconstr_mean+=1e-10
