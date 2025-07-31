@@ -3,213 +3,208 @@
 import warnings
 import numpy as np
 import tensorflow as tf
-import itertools,time
-import sys, os
-from collections import OrderedDict
-from copy import deepcopy
-from time import time
-import matplotlib.pyplot as plt
+import time
+import sys, os, getopt
 import pickle
-import sys, getopt
 from models import prodlda, nvlda
+from gensim.models.coherencemodel import CoherenceModel
+from gensim.corpora import Dictionary
 
 # Suppress warnings from TensorFlow
 warnings.filterwarnings("ignore", category=FutureWarning)
-
-# Disable eager execution for TF1-style code
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
-# List available GPUs and setup memory growth
-gpus = tf.config.list_physical_devices('GPU')
-if gpus:
-    print(f"Detected {len(gpus)} GPU(s):")
-    for gpu in gpus:
-        print("  ", gpu)
-    # Enable memory growth for each GPU
-    for gpu in gpus:
-        try:
-            tf.config.experimental.set_memory_growth(gpu, True)
-        except RuntimeError as e:
-            print(e)
-else:
-    print("No GPU detected. Running on CPU.")
+# ---------------- GPU Setup ---------------- #
+def setup_gpu():
+    gpus = tf.config.list_physical_devices('GPU')
+    if gpus:
+        print(f"Detected {len(gpus)} GPU(s):")
+        for gpu in gpus:
+            print("  ", gpu)
+        for gpu in gpus:
+            try:
+                tf.config.experimental.set_memory_growth(gpu, True)
+            except RuntimeError as e:
+                print(e)
+    else:
+        print("No GPU detected. Running on CPU.")
 
-'''-----------Data--------------'''
+# ---------------- One-hot encoding ---------------- #
 def onehot(data, min_length):
     return np.bincount(data, minlength=min_length)
 
-dataset_tr = 'data/20news_clean/train.txt.npy'
-data_tr = np.load(dataset_tr, allow_pickle=True, encoding="latin1")
-dataset_te = 'data/20news_clean/test.txt.npy'
-data_te = np.load(dataset_te, allow_pickle=True, encoding="latin1")
-vocab = 'data/20news_clean/vocab.pkl'
-vocab = pickle.load(open(vocab, "rb"))
-vocab_size=len(vocab)
-#--------------convert to one-hot representation------------------
-print ('Converting data to one-hot representation')
-data_tr = np.array([onehot(doc.astype('int'),vocab_size) for doc in data_tr if np.sum(doc)!=0])
-data_te = np.array([onehot(doc.astype('int'),vocab_size) for doc in data_te if np.sum(doc)!=0])
-#--------------print the data dimentions--------------------------
-print ('Data Loaded')
-print ('Dim Training Data',data_tr.shape)
-print ('Dim Test Data',data_te.shape)
-'''-----------------------------'''
-
-'''--------------Global Params---------------'''
-n_samples_tr = data_tr.shape[0]
-n_samples_te = data_te.shape[0]
-docs_tr = data_tr
-docs_te = data_te
-batch_size=200
-learning_rate=0.002
-network_architecture = \
-    dict(n_hidden_recog_1=100, # 1st layer encoder neurons
-         n_hidden_recog_2=100, # 2nd layer encoder neurons
-         n_hidden_gener_1=data_tr.shape[1], # 1st layer decoder neurons
-         n_input=data_tr.shape[1], # MNIST data input (img shape: 28*28)
-         n_z=50)  # dimensionality of latent space
-
-'''-----------------------------'''
-
-'''--------------Netowrk Architecture and settings---------------'''
-
-def make_network(layer1=100,layer2=100,num_topics=50,bs=200,eta=0.002):
-    tf.compat.v1.reset_default_graph()
-    network_architecture = \
-        dict(n_hidden_recog_1=layer1, # 1st layer encoder neurons
-             n_hidden_recog_2=layer2, # 2nd layer encoder neurons
-             n_hidden_gener_1=data_tr.shape[1], # 1st layer decoder neurons
-             n_input=data_tr.shape[1], # MNIST data input (img shape: 28*28)
-             n_z=num_topics)  # dimensionality of latent space
-    batch_size=bs
-    learning_rate=eta
-    return network_architecture,batch_size,learning_rate
-
-
-
-'''--------------Methods--------------'''
-def create_minibatch(data):
+# ---------------- Mini-batch generator ---------------- #
+def create_minibatch(data, batch_size):
     rng = np.random.RandomState(10)
-
     while True:
-        # Return random data samples of a size 'minibatch_size' at each iteration
         ixs = rng.randint(data.shape[0], size=batch_size)
         yield data[ixs]
 
-
-def train(network_architecture, minibatches, type='prodlda',learning_rate=0.001,
-          batch_size=200, training_epochs=100, display_step=5):
+# ---------------- Network Architecture ---------------- #
+def make_network(layer1=100, layer2=100, num_topics=50, bs=200, eta=0.002, input_dim=None):
     tf.compat.v1.reset_default_graph()
-    vae=''
-    if type=='prodlda':
-        vae = prodlda.VAE(network_architecture,
-                                     learning_rate=learning_rate,
-                                     batch_size=batch_size)
-    elif type=='nvlda':
-        vae = nvlda.VAE(network_architecture,
-                                     learning_rate=learning_rate,
-                                     batch_size=batch_size)
-    emb=0
-    # Training cycle
+    network_architecture = dict(
+        n_hidden_recog_1=layer1,
+        n_hidden_recog_2=layer2,
+        n_hidden_gener_1=input_dim,
+        n_input=input_dim,
+        n_z=num_topics
+    )
+    return network_architecture, bs, eta
+
+# ---------------- Training ---------------- #
+def train(network_architecture, minibatches, model_type='prodlda',
+          learning_rate=0.001, batch_size=200, training_epochs=100, display_step=5):
+    tf.compat.v1.reset_default_graph()
+    if model_type == 'prodlda':
+        vae = prodlda.VAE(network_architecture, learning_rate=learning_rate, batch_size=batch_size)
+    elif model_type == 'nvlda':
+        vae = nvlda.VAE(network_architecture, learning_rate=learning_rate, batch_size=batch_size)
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+
+    emb = None
     for epoch in range(training_epochs):
         avg_cost = 0.
         total_batch = int(n_samples_tr / batch_size)
-        # Loop over all batches
         for i in range(total_batch):
             batch_xs = next(minibatches)
-            # Fit training using batch data
-            cost,emb = vae.partial_fit(batch_xs)
-            # Compute average loss
+            cost, emb = vae.partial_fit(batch_xs)
             avg_cost += cost / n_samples_tr * batch_size
 
             if np.isnan(avg_cost):
-                print (epoch,i,np.sum(batch_xs,1).astype(int),batch_xs.shape)
-                print ('Encountered NaN, stopping training. Please check the learning_rate settings and the momentum.')
-                # return vae,emb
+                print(epoch, i, np.sum(batch_xs, 1).astype(int), batch_xs.shape)
+                print('Encountered NaN, stopping training. Check learning rate or momentum.')
                 sys.exit()
 
-        # Display logs per epoch step
         if epoch % display_step == 0:
-            print ("Epoch:", '%04d' % (epoch+1), \
-                  "cost=", "{:.9f}".format(avg_cost))
-    return vae,emb
+            print(f"Epoch: {epoch+1:04d} cost= {avg_cost:.9f}")
+    return vae, emb
 
+# ---------------- Print topics ---------------- #
 def print_top_words(beta, feature_names, n_top_words=10):
-    print ('---------------Printing the Topics------------------')
+    print('---------------Printing the Topics------------------')
     for i in range(len(beta)):
-        print(" ".join([feature_names[j]
-            for j in beta[i].argsort()[:-n_top_words - 1:-1]]))
-    print ('---------------End of Topics------------------')
+        print(" ".join([feature_names[j] for j in beta[i].argsort()[:-n_top_words - 1:-1]]))
+    print('---------------End of Topics------------------')
 
+# ---------------- Perplexity (FIXED) ---------------- #
 def calcPerp(model):
-    cost=[]
+    cost = []
     for doc in docs_te:
-        doc = doc.astype('float32')
-        n_d = np.sum(doc)
-        c=model.test(doc)
-        cost.append(c/n_d)
-    print ('The approximated perplexity is: ',(np.exp(np.mean(np.array(cost)))))
+        # Keep raw counts (no normalization for perplexity)
+        doc_raw = doc.astype('float32')
+        n_d = np.sum(doc_raw)  # document length
+        if n_d == 0:
+            continue
+        c = model.test(doc_raw)  # model.test now works with raw counts
+        cost.append(c / n_d)
+    ppl = np.exp(np.mean(np.array(cost)))
+    print('The approximated perplexity is: ', ppl)
 
+# ---------------- Coherence ---------------- #
+def compute_coherence(emb, top_n=10):
+    global vocab, docs_tr
+    if emb is None or len(emb) == 0:
+        raise ValueError("Topic-word matrix (emb) is empty or None")
+
+    # Normalize topic-word matrix
+    emb_norm = emb / emb.sum(axis=1, keepdims=True)
+    feature_names = list(zip(*sorted(vocab.items(), key=lambda x: x[1])))[0]
+
+    # Convert docs to token lists (with word frequencies)
+    docs = []
+    for doc in docs_tr:
+        words = []
+        for idx in np.where(doc > 0)[0]:
+            words.extend([feature_names[idx]] * int(doc[idx]))
+        docs.append(words)
+
+    dictionary = Dictionary(docs)
+
+    # Prepare topic top words
+    topics = [[feature_names[i] for i in topic.argsort()[-top_n:][::-1]] 
+              for topic in emb_norm]
+
+    # Run all coherence measures
+    coherence_types = ["c_v", "u_mass", "c_uci", "c_npmi"]
+    for c_type in coherence_types:
+        cm = CoherenceModel(topics=topics, texts=docs, dictionary=dictionary, coherence=c_type)
+        print(f"The {c_type} coherence score is:", cm.get_coherence())
+
+# ---------------- Main ---------------- #
 def main(argv):
-    m = ''
-    f = ''
-    s = ''
-    t = ''
-    b = ''
-    r = ''
-    e = ''
+    setup_gpu()
+
+    # ----- Data Loading -----
+    dataset_tr = 'data/20news_clean/train.txt.npy'
+    dataset_te = 'data/20news_clean/test.txt.npy'
+    vocab_file = 'data/20news_clean/vocab.pkl'
+
+    data_tr = np.load(dataset_tr, allow_pickle=True, encoding="latin1")
+    data_te = np.load(dataset_te, allow_pickle=True, encoding="latin1")
+    vocab_local = pickle.load(open(vocab_file, "rb"))
+    vocab_size = len(vocab_local)
+
+    print('Converting data to one-hot representation')
+    data_tr = np.array([onehot(doc.astype('int'), vocab_size) for doc in data_tr if np.sum(doc) != 0])
+    data_te = np.array([onehot(doc.astype('int'), vocab_size) for doc in data_te if np.sum(doc) != 0])
+    print('Data Loaded')
+    print('Dim Training Data', data_tr.shape)
+    print('Dim Test Data', data_te.shape)
+
+    # make globals accessible
+    global docs_tr, docs_te, vocab, n_samples_tr, n_samples_te
+    docs_tr, docs_te = data_tr, data_te
+    vocab = vocab_local
+    n_samples_tr, n_samples_te = data_tr.shape[0], data_te.shape[0]
+
+    # ----- Parse Args -----
+    m, f, s, t, b, r, e = '', 100, 100, 50, 200, 0.002, 100
     try:
-      opts, args = getopt.getopt(argv,"hpnm:f:s:t:b:r:,e:",["default=","model=","layer1=","layer2=","num_topics=","batch_size=","learning_rate=","training_epochs"])
+        opts, args = getopt.getopt(argv, "hpnm:f:s:t:b:r:,e:",
+                                   ["default=", "model=", "layer1=", "layer2=", "num_topics=",
+                                    "batch_size=", "learning_rate=", "training_epochs"])
     except getopt.GetoptError:
-        print ('CUDA_VISIBLE_DEVICES=0 python run.py -m <model> -f <#units> -s <#units> -t <#topics> -b <batch_size> -r <learning_rate [0,1] -e <training_epochs>')
+        print('CUDA_VISIBLE_DEVICES=0 python run.py -m <model> -f <#units> -s <#units> -t <#topics> '
+              '-b <batch_size> -r <learning_rate [0,1]> -e <training_epochs>')
         sys.exit(2)
+
     for opt, arg in opts:
         if opt == '-h':
-            print ('CUDA_VISIBLE_DEVICES=0 python run.py -m <model> -f <#units> -s <#units> -t <#topics> -b <batch_size> -r <learning_rate [0,1]> -e <training_epochs>')
+            print('CUDA_VISIBLE_DEVICES=0 python run.py -m <model> -f <#units> -s <#units> -t <#topics> '
+                  '-b <batch_size> -r <learning_rate [0,1]> -e <training_epochs>')
             sys.exit()
         elif opt == '-p':
-            print ('Running with the Default settings for prodLDA...')
-            print ('CUDA_VISIBLE_DEVICES=0 python run.py -m prodlda -f 100 -s 100 -t 50 -b 200 -r 0.002 -e 100')
-            m='prodlda'
-            f=100
-            s=100
-            t=50
-            b=200
-            r=0.002
-            e=100
+            print('Running with the Default settings for prodLDA...')
+            m, f, s, t, b, r, e = 'prodlda', 100, 100, 50, 200, 0.002, 100
         elif opt == '-n':
-            print ('Running with the Default settings for NVLDA...')
-            print ('CUDA_VISIBLE_DEVICES=0 python run.py -m nvlda -f 100 -s 100 -t 50 -b 200 -r 0.005 -e 300')
-            m='nvlda'
-            f=100
-            s=100
-            t=50
-            b=200
-            r=0.01
-            e=300
-        elif opt == "-m":
-            m=arg
-        elif opt == "-f":
-            f=int(arg)
-        elif opt == "-s":
-            s=int(arg)
-        elif opt == "-t":
-            t=int(arg)
-        elif opt == "-b":
-            b=int(arg)
-        elif opt == "-r":
-            r=float(arg)
-        elif opt == "-e":
-            e=int(arg)
+            print('Running with the Default settings for NVLDA...')
+            m, f, s, t, b, r, e = 'nvlda', 100, 100, 50, 200, 0.005, 300
+        elif opt == "-m": m = arg
+        elif opt == "-f": f = int(arg)
+        elif opt == "-s": s = int(arg)
+        elif opt == "-t": t = int(arg)
+        elif opt == "-b": b = int(arg)
+        elif opt == "-r": r = float(arg)
+        elif opt == "-e": e = int(arg)
 
-    minibatches = create_minibatch(docs_tr.astype('float32'))
-    network_architecture,batch_size,learning_rate=make_network(f,s,t,b,r)
-    print (network_architecture)
-    print (opts)
-    vae,emb = train(network_architecture, minibatches,m, training_epochs=e,batch_size=batch_size,learning_rate=learning_rate)
+    minibatches = create_minibatch(docs_tr.astype('float32'), batch_size=b)
+    network_architecture, batch_size, learning_rate = make_network(f, s, t, b, r, input_dim=data_tr.shape[1])
+    print(network_architecture)
+    print(opts)
+
+    vae, emb = train(network_architecture, minibatches, m, training_epochs=e,
+                     batch_size=batch_size, learning_rate=learning_rate)
+
     features = list(zip(*sorted(vocab.items(), key=lambda x: x[1])))[0]
     print_top_words(emb, features)
+
+    print("The model is trained, now calculating the perplexity and coherence score...")
+    print("Topic Coherence...")
+    compute_coherence(emb)
+    print("Calculating Perplexity...")
     calcPerp(vae)
 
 if __name__ == "__main__":
-   main(sys.argv[1:])
+    main(sys.argv[1:])
