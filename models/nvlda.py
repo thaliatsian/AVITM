@@ -110,20 +110,27 @@ class VAE(object):
         return x_reconstr_mean
     
     def _create_loss_optimizer(self):
-        self.x_reconstr_mean+=1e-10
-        reconstr_loss = \
-            -tf.reduce_sum(self.x * tf.math.log(self.x_reconstr_mean),1)#/tf.reduce_sum(self.x,1)
+        # Create a safe version of x_reconstr_mean to avoid log(0)
+        x_reconstr_mean_safe = self.x_reconstr_mean + 1e-10
 
-        latent_loss = 0.5*( tf.reduce_sum(tf.divide(self.sigma,self.var2),1)+\
-        tf.reduce_sum( tf.multiply(tf.divide((self.mu2 - self.z_mean),self.var2),
-                  (self.mu2 - self.z_mean)),1) - self.h_dim +\
-                           tf.reduce_sum(tf.math.log(self.var2),1)  - tf.reduce_sum(self.z_log_sigma_sq  ,1) )
+        reconstr_loss = -tf.reduce_sum(self.x * tf.math.log(x_reconstr_mean_safe), axis=1)  # /tf.reduce_sum(self.x,1)
 
-        self.cost = tf.reduce_mean(reconstr_loss) + tf.reduce_mean(latent_loss) # average over batch
+        latent_loss = 0.5 * (
+            tf.reduce_sum(tf.divide(self.sigma, self.var2), axis=1) +
+            tf.reduce_sum(tf.multiply(tf.divide((self.mu2 - self.z_mean), self.var2),
+                                        (self.mu2 - self.z_mean)), axis=1)
+            - self.h_dim +
+            tf.reduce_sum(tf.math.log(self.var2), axis=1) -
+            tf.reduce_sum(self.z_log_sigma_sq, axis=1)
+        )
 
+        self.cost = tf.reduce_mean(reconstr_loss) + tf.reduce_mean(latent_loss)  # average over batch
 
-        self.optimizer = \
-            tf.compat.v1.train.AdamOptimizer(learning_rate=self.learning_rate,beta1=0.99).minimize(self.cost)
+        # Use Adam optimizer with gradient clipping to avoid exploding gradients
+        optimizer = tf.compat.v1.train.AdamOptimizer(learning_rate=self.learning_rate, beta1=0.99)
+        grads_vars = optimizer.compute_gradients(self.cost)
+        clipped_grads, _ = tf.clip_by_global_norm([g for g, v in grads_vars], 5.0)
+        self.optimizer = optimizer.apply_gradients(zip(clipped_grads, [v for g, v in grads_vars]))
 
     def partial_fit(self, X):
         opt, cost,emb = self.sess.run((self.optimizer, self.cost,self.network_weights['weights_gener']['h2']),feed_dict={self.x: X,self.keep_prob: .75})

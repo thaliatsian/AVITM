@@ -19,6 +19,21 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 # Disable eager execution for TF1-style code
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
+# List available GPUs and setup memory growth
+gpus = tf.config.list_physical_devices('GPU')
+if gpus:
+    print(f"Detected {len(gpus)} GPU(s):")
+    for gpu in gpus:
+        print("  ", gpu)
+    # Enable memory growth for each GPU
+    for gpu in gpus:
+        try:
+            tf.config.experimental.set_memory_growth(gpu, True)
+        except RuntimeError as e:
+            print(e)
+else:
+    print("No GPU detected. Running on CPU.")
+
 '''-----------Data--------------'''
 def onehot(data, min_length):
     return np.bincount(data, minlength=min_length)
@@ -192,7 +207,8 @@ def main(argv):
     print (network_architecture)
     print (opts)
     vae,emb = train(network_architecture, minibatches,m, training_epochs=e,batch_size=batch_size,learning_rate=learning_rate)
-    print_top_words(emb, zip(*sorted(vocab.items(), key=lambda x: x[1]))[0])
+    features = list(zip(*sorted(vocab.items(), key=lambda x: x[1])))[0]
+    print_top_words(emb, features)
     calcPerp(vae)
 
 if __name__ == "__main__":
