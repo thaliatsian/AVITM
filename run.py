@@ -54,12 +54,19 @@ def make_network(layer1=100, layer2=100, num_topics=50, bs=200, eta=0.002, input
 
 # ---------------- Training ---------------- #
 def train(network_architecture, minibatches, model_type='prodlda',
-          learning_rate=0.001, batch_size=200, training_epochs=100, display_step=5):
+          learning_rate=0.001, batch_size=200, training_epochs=100,
+          prior='dirichlet', bn=False):
     tf.compat.v1.reset_default_graph()
     if model_type == 'prodlda':
-        vae = prodlda.VAE(network_architecture, learning_rate=learning_rate, batch_size=batch_size)
+        vae = prodlda.VAE(network_architecture,
+                          learning_rate=learning_rate,
+                          batch_size=batch_size,
+                          prior=prior,
+                          use_batch_norm=bn)
     elif model_type == 'nvlda':
-        vae = nvlda.VAE(network_architecture, learning_rate=learning_rate, batch_size=batch_size)
+        vae = nvlda.VAE(network_architecture,
+                        learning_rate=learning_rate,
+                        batch_size=batch_size)
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
@@ -77,7 +84,7 @@ def train(network_architecture, minibatches, model_type='prodlda',
                 print('Encountered NaN, stopping training. Check learning rate or momentum.')
                 sys.exit()
 
-        if epoch % display_step == 0:
+        if epoch % 5 == 0:
             print(f"Epoch: {epoch+1:04d} cost= {avg_cost:.9f}")
     return vae, emb
 
@@ -88,16 +95,15 @@ def print_top_words(beta, feature_names, n_top_words=10):
         print(" ".join([feature_names[j] for j in beta[i].argsort()[:-n_top_words - 1:-1]]))
     print('---------------End of Topics------------------')
 
-# ---------------- Perplexity (FIXED) ---------------- #
+# ---------------- Perplexity ---------------- #
 def calcPerp(model):
     cost = []
     for doc in docs_te:
-        # Keep raw counts (no normalization for perplexity)
         doc_raw = doc.astype('float32')
-        n_d = np.sum(doc_raw)  # document length
+        n_d = np.sum(doc_raw)
         if n_d == 0:
             continue
-        c = model.test(doc_raw)  # model.test now works with raw counts
+        c = model.test(doc_raw)
         cost.append(c / n_d)
     ppl = np.exp(np.mean(np.array(cost)))
     print('The approximated perplexity is: ', ppl)
@@ -108,11 +114,9 @@ def compute_coherence(emb, top_n=10):
     if emb is None or len(emb) == 0:
         raise ValueError("Topic-word matrix (emb) is empty or None")
 
-    # Normalize topic-word matrix
     emb_norm = emb / emb.sum(axis=1, keepdims=True)
     feature_names = list(zip(*sorted(vocab.items(), key=lambda x: x[1])))[0]
 
-    # Convert docs to token lists (with word frequencies)
     docs = []
     for doc in docs_tr:
         words = []
@@ -121,22 +125,16 @@ def compute_coherence(emb, top_n=10):
         docs.append(words)
 
     dictionary = Dictionary(docs)
-
-    # Prepare topic top words
-    topics = [[feature_names[i] for i in topic.argsort()[-top_n:][::-1]] 
+    topics = [[feature_names[i] for i in topic.argsort()[-top_n:][::-1]]
               for topic in emb_norm]
 
-    # Run all coherence measures
-    coherence_types = ["c_v", "u_mass", "c_uci", "c_npmi"]
-    for c_type in coherence_types:
-        cm = CoherenceModel(topics=topics, texts=docs, dictionary=dictionary, coherence=c_type)
-        print(f"The {c_type} coherence score is:", cm.get_coherence())
+    cm = CoherenceModel(topics=topics, texts=docs, dictionary=dictionary, coherence="c_npmi")
+    print("The c_npmi coherence score is:", cm.get_coherence())
 
 # ---------------- Main ---------------- #
 def main(argv):
     setup_gpu()
 
-    # ----- Data Loading -----
     dataset_tr = 'data/20news_clean/train.txt.npy'
     dataset_te = 'data/20news_clean/test.txt.npy'
     vocab_file = 'data/20news_clean/vocab.pkl'
@@ -153,33 +151,35 @@ def main(argv):
     print('Dim Training Data', data_tr.shape)
     print('Dim Test Data', data_te.shape)
 
-    # make globals accessible
     global docs_tr, docs_te, vocab, n_samples_tr, n_samples_te
     docs_tr, docs_te = data_tr, data_te
     vocab = vocab_local
     n_samples_tr, n_samples_te = data_tr.shape[0], data_te.shape[0]
 
-    # ----- Parse Args -----
+    # Default args
     m, f, s, t, b, r, e = '', 100, 100, 50, 200, 0.002, 100
+    prior, bn = 'dirichlet', False
+
     try:
-        opts, args = getopt.getopt(argv, "hpnm:f:s:t:b:r:,e:",
-                                   ["default=", "model=", "layer1=", "layer2=", "num_topics=",
-                                    "batch_size=", "learning_rate=", "training_epochs"])
+        opts, args = getopt.getopt(argv, "hpnm:f:s:t:b:r:e:",
+                                   ["model=", "layer1=", "layer2=", "num_topics=",
+                                    "batch_size=", "learning_rate=", "training_epochs=",
+                                    "prior=", "bn="])
     except getopt.GetoptError:
-        print('CUDA_VISIBLE_DEVICES=0 python run.py -m <model> -f <#units> -s <#units> -t <#topics> '
-              '-b <batch_size> -r <learning_rate [0,1]> -e <training_epochs>')
+        print('Usage: python run.py -m <model> -f <#units> -s <#units> -t <#topics> '
+              '-b <batch_size> -r <learning_rate> -e <training_epochs> --prior=<dirichlet|gaussian> --bn=<True|False>')
         sys.exit(2)
 
     for opt, arg in opts:
         if opt == '-h':
-            print('CUDA_VISIBLE_DEVICES=0 python run.py -m <model> -f <#units> -s <#units> -t <#topics> '
-                  '-b <batch_size> -r <learning_rate [0,1]> -e <training_epochs>')
+            print('Usage: python run.py -m <model> -f <#units> -s <#units> -t <#topics> '
+                  '-b <batch_size> -r <learning_rate> -e <training_epochs> --prior=<dirichlet|gaussian> --bn=<True|False>')
             sys.exit()
         elif opt == '-p':
-            print('Running with the Default settings for prodLDA...')
+            print('Running default ProdLDA settings...')
             m, f, s, t, b, r, e = 'prodlda', 100, 100, 50, 200, 0.002, 100
         elif opt == '-n':
-            print('Running with the Default settings for NVLDA...')
+            print('Running default NVLDA settings...')
             m, f, s, t, b, r, e = 'nvlda', 100, 100, 50, 200, 0.005, 300
         elif opt == "-m": m = arg
         elif opt == "-f": f = int(arg)
@@ -188,22 +188,24 @@ def main(argv):
         elif opt == "-b": b = int(arg)
         elif opt == "-r": r = float(arg)
         elif opt == "-e": e = int(arg)
+        elif opt == "--prior": prior = arg.lower()
+        elif opt == "--bn": bn = (arg.lower() == "true")
 
     minibatches = create_minibatch(docs_tr.astype('float32'), batch_size=b)
     network_architecture, batch_size, learning_rate = make_network(f, s, t, b, r, input_dim=data_tr.shape[1])
     print(network_architecture)
     print(opts)
 
-    vae, emb = train(network_architecture, minibatches, m, training_epochs=e,
-                     batch_size=batch_size, learning_rate=learning_rate)
+    vae, emb = train(network_architecture, minibatches, m,
+                     training_epochs=e, batch_size=batch_size,
+                     learning_rate=learning_rate,
+                     prior=prior, bn=bn)
 
     features = list(zip(*sorted(vocab.items(), key=lambda x: x[1])))[0]
     print_top_words(emb, features)
 
     print("The model is trained, now calculating the perplexity and coherence score...")
-    print("Topic Coherence...")
     compute_coherence(emb)
-    print("Calculating Perplexity...")
     calcPerp(vae)
 
 if __name__ == "__main__":
